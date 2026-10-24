@@ -2,7 +2,7 @@
 
 Cursor 多窗口任务进度监测工具
 
-<img src="assets/biubiu-img.png" width="96" alt="biubiu">
+<img src="assets/view-window.png" width="226" alt="biubiu">
 
 ## ✨ 功能简介
 
@@ -21,3 +21,9 @@ Cursor 多窗口任务进度监测工具
 CEMOI1124
 
 Github：https://github.com/CEMOI1124/biubiu
+
+## ☕ 支持一下
+如果 biubiu 帮你省下了来回切换窗口查看 Cursor 任务的时间，
+你可以请我喝一杯咖啡，鼓励我持续优化功能、修复问题。
+
+<img src="assets/zfb.png" width="226" alt="biubiu"><img src="assets/wx.png" width="226" alt="biubiu">
