@@ -37,6 +37,7 @@ static class CursorTitleTests
             "Biubiu");
 
         failures += HookTests.Run();
+        failures += CardTests.Run();
 
         if (failures == 0)
         {

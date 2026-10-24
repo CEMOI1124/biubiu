@@ -1,16 +1,23 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Forms;
 
 namespace Biubiu
 {
     static class Program
     {
+        public static string StartupWarning;
+
+        [STAThread]
         static int Main(string[] args)
         {
             Console.OutputEncoding = Encoding.UTF8;
             EnsureHook();
-            if (args == null || args.Length == 0 || args[0] == "list")
+            if (args == null || args.Length == 0 || args[0] == "ui")
+                return Show();
+            if (args[0] == "list")
                 return List();
             if (args[0] == "activate")
                 return Activate(args);
@@ -20,6 +27,26 @@ namespace Biubiu
             return 1;
         }
 
+        static int Show()
+        {
+            HideOwnConsole();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new MainForm());
+            return 0;
+        }
+
+        static void HideOwnConsole()
+        {
+            IntPtr hwnd = GetConsoleWindow();
+            if (hwnd == IntPtr.Zero)
+                return;
+            uint owner;
+            GetWindowThreadProcessId(hwnd, out owner);
+            if (owner == GetCurrentProcessId())
+                ShowWindow(hwnd, 0);
+        }
+
         static void EnsureHook()
         {
             try
@@ -27,7 +54,10 @@ namespace Biubiu
                 string script = HookInstaller.ReadEmbeddedScript();
                 HookInstallResult result = HookInstaller.Install(HookInstaller.DefaultCursorDirectory(), script);
                 if (!result.Ok)
+                {
+                    StartupWarning = result.Error;
                     Console.Error.WriteLine("hook: " + result.Error);
+                }
             }
             catch (Exception ex)
             {
@@ -168,10 +198,23 @@ namespace Biubiu
 
         static void Usage()
         {
-            Console.Error.WriteLine("usage: Biubiu.exe list");
+            Console.Error.WriteLine("usage: Biubiu.exe");
+            Console.Error.WriteLine("       Biubiu.exe list");
             Console.Error.WriteLine("       Biubiu.exe activate --project <name>");
             Console.Error.WriteLine("       Biubiu.exe activate --hwnd <id>");
             Console.Error.WriteLine("       Biubiu.exe tasks");
         }
+
+        [DllImport("kernel32.dll")]
+        static extern IntPtr GetConsoleWindow();
+
+        [DllImport("kernel32.dll")]
+        static extern uint GetCurrentProcessId();
+
+        [DllImport("user32.dll")]
+        static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+        [DllImport("user32.dll")]
+        static extern bool ShowWindow(IntPtr hwnd, int command);
     }
 }

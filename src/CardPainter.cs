@@ -1,0 +1,293 @@
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Windows.Forms;
+
+namespace Biubiu
+{
+    public static class CardPainter
+    {
+        public static readonly Color Canvas = Color.FromArgb(255, 247, 246, 244);
+        public static readonly Color CardFill = Color.White;
+        public static readonly Color IdleBorder = Color.FromArgb(255, 231, 229, 228);
+        public static readonly Color CompletedBorder = Color.FromArgb(255, 22, 128, 74);
+        public static readonly Color CompletedFill = Color.FromArgb(255, 220, 242, 228);
+        public static readonly Color WarningBorder = Color.FromArgb(255, 161, 98, 7);
+        public static readonly Color WarningFill = Color.FromArgb(255, 255, 244, 214);
+        public static readonly Color ErrorBorder = Color.FromArgb(255, 185, 28, 28);
+        public static readonly Color ErrorFill = Color.FromArgb(255, 253, 226, 226);
+        public static readonly Color Track = Color.FromArgb(255, 231, 229, 228);
+        public static readonly Color RunningHighlight = Color.FromArgb(255, 28, 25, 23);
+        public static readonly Color TitleColor = Color.FromArgb(255, 28, 25, 23);
+        public static readonly Color MutedColor = Color.FromArgb(255, 120, 113, 108);
+        public static readonly Color ChipFill = Color.FromArgb(255, 245, 245, 244);
+        public static readonly Color NoteHint = Color.FromArgb(255, 168, 162, 158);
+        public const int Radius = 16;
+        static float scale = 1f;
+
+        public static float Scale
+        {
+            get { return scale; }
+        }
+
+        public static int CardWidth
+        {
+            get { return Px(320); }
+        }
+
+        public static int CardHeight
+        {
+            get { return Px(156); }
+        }
+
+        public static void SetScale(float value)
+        {
+            scale = UiSettings.ClampScale(value);
+        }
+
+        public static int Px(int value)
+        {
+            return Math.Max(1, (int)Math.Round(value * scale));
+        }
+
+        public static Font CreateTitleFont()
+        {
+            return new Font("Segoe UI", 11f * scale, FontStyle.Bold);
+        }
+
+        public static Font CreateBodyFont()
+        {
+            return new Font("Segoe UI", 9f * scale);
+        }
+
+        public static Rectangle ProgressBar(Rectangle bounds)
+        {
+            return new Rectangle(Px(18), bounds.Height - Px(30), bounds.Width - Px(36), Px(12));
+        }
+
+        public static Rectangle CheckBounds(Rectangle bounds)
+        {
+            return new Rectangle(bounds.Width - Px(32), Px(14), Px(16), Px(16));
+        }
+
+        public static Rectangle TitleBounds(Rectangle bounds, string project)
+        {
+            string title = string.IsNullOrEmpty(project) ? "未命名" : project;
+            int max = bounds.Width - Px(124);
+            if (max < Px(48))
+                max = Px(48);
+            using (Font font = CreateTitleFont())
+            {
+                Size size = TextRenderer.MeasureText(title, font, new Size(max, Px(24)), TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+                int width = size.Width;
+                if (width > max)
+                    width = max;
+                if (width < 1)
+                    width = 1;
+                return new Rectangle(Px(18), Px(16), width, Px(24));
+            }
+        }
+
+        public static Rectangle NoteBounds(Rectangle bounds, string project, string note, bool editing)
+        {
+            Rectangle title = TitleBounds(bounds, project);
+            int left = title.Right + Px(6);
+            int right = bounds.Width - Px(36);
+            int max = right - left;
+            if (max < Px(24))
+                max = Px(24);
+            int width = max;
+            if (!editing)
+            {
+                string shown = string.IsNullOrEmpty(note) ? "\u5907\u6ce8" : note;
+                using (Font font = CreateBodyFont())
+                {
+                    Size size = TextRenderer.MeasureText(shown, font, new Size(max, Px(24)), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                    width = size.Width + Px(18);
+                }
+                if (width < Px(56))
+                    width = Px(56);
+                if (width > max)
+                    width = max;
+            }
+            return new Rectangle(left, title.Y, width, title.Height);
+        }
+
+        public static void Paint(Graphics graphics, Rectangle bounds, ProjectCard card, float phase)
+        {
+            Paint(graphics, bounds, card, phase, false);
+        }
+
+        public static void Paint(Graphics graphics, Rectangle bounds, ProjectCard card, float phase, bool editingNote)
+        {
+            if (graphics == null || card == null)
+                return;
+            if (phase < 0f)
+                phase = 0f;
+            if (phase > 1f)
+                phase = 1f;
+
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.Clear(Canvas);
+            string status = card.Status ?? "";
+            bool completed = status == "completed";
+            bool running = status == "running";
+            bool aborted = status == "aborted";
+            bool waiting = status == "confirm";
+            bool failed = status == "error";
+            Color border = IdleBorder;
+            Color fillColor = CardFill;
+            int thickness = 1;
+            if (completed)
+            {
+                border = CompletedBorder;
+                fillColor = CompletedFill;
+                thickness = 2;
+            }
+            else if (failed)
+            {
+                border = ErrorBorder;
+                fillColor = ErrorFill;
+                thickness = 2;
+            }
+            else if (aborted || waiting)
+            {
+                border = WarningBorder;
+                fillColor = WarningFill;
+                thickness = 2;
+            }
+
+            int radius = Px(Radius);
+            Rectangle shadowBounds = bounds;
+            shadowBounds.Offset(0, Px(1));
+            using (GraphicsPath shadow = RoundRect(shadowBounds, radius))
+            using (Brush shadowBrush = new SolidBrush(Color.FromArgb(16, 28, 25, 23)))
+                graphics.FillPath(shadowBrush, shadow);
+
+            using (GraphicsPath outer = RoundRect(bounds, radius))
+            using (Brush fill = new SolidBrush(border))
+                graphics.FillPath(fill, outer);
+
+            Rectangle inner = new Rectangle(bounds.X + thickness, bounds.Y + thickness, bounds.Width - thickness * 2, bounds.Height - thickness * 2);
+            int innerRadius = radius - thickness;
+            if (innerRadius < 1)
+                innerRadius = 1;
+            using (GraphicsPath innerPath = RoundRect(inner, innerRadius))
+            using (Brush fill = new SolidBrush(fillColor))
+                graphics.FillPath(fill, innerPath);
+
+            if (running)
+            {
+                Rectangle bar = ProgressBar(bounds);
+                using (GraphicsPath trackPath = RoundRect(bar, Px(6)))
+                using (Brush track = new SolidBrush(Track))
+                {
+                    graphics.FillPath(track, trackPath);
+                    int band = Px(72);
+                    float center = bar.Left + phase * bar.Width;
+                    Rectangle shine = new Rectangle((int)center - band / 2, bar.Top, band, bar.Height);
+                    graphics.SetClip(trackPath);
+                    using (Brush highlight = new SolidBrush(RunningHighlight))
+                        graphics.FillRectangle(highlight, shine);
+                    graphics.ResetClip();
+                }
+            }
+
+            if (completed)
+                DrawCheck(graphics, CheckBounds(bounds));
+
+            string project = string.IsNullOrEmpty(card.Project) ? "未命名" : card.Project;
+            string summary = SummaryText(card);
+            Color summaryColor = MutedColor;
+            if (status == "completed")
+                summaryColor = CompletedBorder;
+            else if (failed)
+                summaryColor = ErrorBorder;
+            else if (aborted || waiting)
+                summaryColor = WarningBorder;
+            else if (status != "idle")
+                summaryColor = TitleColor;
+            using (Font titleFont = CreateTitleFont())
+            using (Font bodyFont = CreateBodyFont())
+            {
+                TextRenderer.DrawText(graphics, project, titleFont, TitleBounds(bounds, card.Project), TitleColor, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                Rectangle note = NoteBounds(bounds, card.Project, card.Note, editingNote);
+                using (GraphicsPath notePath = RoundRect(note, Px(8)))
+                using (Brush noteBrush = new SolidBrush(ChipFill))
+                using (Pen notePen = new Pen(IdleBorder))
+                {
+                    graphics.FillPath(noteBrush, notePath);
+                    graphics.DrawPath(notePen, notePath);
+                }
+                if (!editingNote)
+                {
+                    string noteText = string.IsNullOrEmpty(card.Note) ? "\u5907\u6ce8" : card.Note;
+                    Color noteColor = string.IsNullOrEmpty(card.Note) ? NoteHint : MutedColor;
+                    Rectangle noteTextBounds = new Rectangle(note.X + Px(8), note.Y, Math.Max(1, note.Width - Px(16)), note.Height);
+                    TextRenderer.DrawText(graphics, noteText, bodyFont, noteTextBounds, noteColor, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                }
+                TextRenderer.DrawText(graphics, summary, bodyFont, new Rectangle(Px(18), Px(56), Math.Max(1, bounds.Width - Px(36)), Px(64)), summaryColor, TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            }
+        }
+
+        static string SummaryText(ProjectCard card)
+        {
+            string status = card.Status ?? "";
+            if (status == "idle")
+                return "暂无任务";
+            if (status == "confirm")
+                return "\u8bf7\u8fd4\u56de Cursor \u786e\u8ba4\u6216\u6267\u884c\u6307\u4ee4";
+            if (status == "aborted")
+                return Prefix("已中止", card.Summary);
+            if (status == "error")
+                return Prefix("出错", card.Summary);
+            if (status == "unknown")
+                return Prefix("状态未知", card.Summary);
+            return card.Summary ?? "";
+        }
+
+        static string Prefix(string label, string summary)
+        {
+            if (string.IsNullOrEmpty(summary))
+                return label;
+            return label + "  " + summary;
+        }
+
+        static void DrawCheck(Graphics graphics, Rectangle bounds)
+        {
+            using (Brush brush = new SolidBrush(CompletedBorder))
+                graphics.FillEllipse(brush, bounds);
+            float unit = bounds.Width / 16f;
+            float x = bounds.Left + 4f * unit;
+            float y = bounds.Top + 8f * unit;
+            using (Pen pen = new Pen(Color.White, 1.6f * unit))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                graphics.DrawLine(pen, x, y, x + 3f * unit, y + 3f * unit);
+                graphics.DrawLine(pen, x + 3f * unit, y + 3f * unit, x + 8f * unit, y - 2f * unit);
+            }
+        }
+
+        public static GraphicsPath RoundRect(Rectangle bounds, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            int diameter = radius * 2;
+            if (diameter > bounds.Width)
+                diameter = bounds.Width;
+            if (diameter > bounds.Height)
+                diameter = bounds.Height;
+            if (diameter < 2)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+            path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+}
