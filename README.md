@@ -16,6 +16,11 @@ Cursor 多窗口任务进度监测工具
 
 仅本地监测，不会上传你的代码、对话内容到第三方服务器。
 
+## 下载附件：
+
+- [biubiu.exe](https://github.com/CEMOI1124/biubiu/releases/download/untagged-c2be2a8743c256852345/Biubiu.exe) 单文件版本
+- [biubiu.zip](https://github.com/CEMOI1124/biubiu/releases/download/untagged-c2be2a8743c256852345/Biubiu.zip) 绿色压缩包
+
 ## 作者
 
 CEMOI1124
