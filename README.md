@@ -2,11 +2,9 @@
 
 Cursor 多窗口任务进度监测工具
 
-![image-20261025205456962](C:\Users\m\AppData\Roaming\Typora\typora-user-images\image-20261025205456962.png)![image-20261025205526863](C:\Users\m\AppData\Roaming\Typora\typora-user-images\image-20261025205526863.png)
+<img src="assets/view-window1.png" width="326" alt="biubiu"><img src="assets/view-window2.png" width="326" alt="biubiu">
 
 ## ✨ 功能简介
-
-专门面向 Cursor 编辑器用户开发的桌面托盘工具：
 
 - 自动识别打开的多个 Cursor 窗口，抓取正在执行的任务信息，点击切换到对应的 Cursor 窗口；
 - 卡片式列表展示每个任务的实时进度，任务结束后高亮绿色标记完成状态。
