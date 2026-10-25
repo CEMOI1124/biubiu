@@ -8,14 +8,21 @@ namespace Biubiu
     public class SettingsForm : Form
     {
         readonly TrackBar slider = new TrackBar();
+        readonly TrackBar volumeSlider = new TrackBar();
         readonly Label percentLabel = new Label();
+        readonly Label volumeLabel = new Label();
+        readonly CheckBox soundBox = new CheckBox();
         readonly SizePreview preview = new SizePreview();
         readonly int requestedPercent;
+        readonly int requestedVolume;
+        readonly bool requestedSound;
         bool live;
 
         public event Action<float> ScaleChanged;
+        public event Action<bool, int> SoundChanged;
+        public event Action<int> SoundPreview;
 
-        public SettingsForm(float scale)
+        public SettingsForm(float scale, bool soundEnabled, int volume)
         {
             Text = "设置";
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -25,7 +32,7 @@ namespace Biubiu
             StartPosition = FormStartPosition.CenterParent;
             BackColor = CardPainter.Canvas;
             Font = new Font("Segoe UI", 9.5f);
-            ClientSize = new Size(400, 392);
+            ClientSize = new Size(400, 472);
             AppIcon.Apply(this);
 
             Label heading = new Label();
@@ -72,8 +79,57 @@ namespace Biubiu
             hint.Location = new Point(24, 108);
 
             preview.SampleScale = slider.Value / 100f;
-            preview.Location = new Point(24, 150);
-            preview.Size = new Size(352, 168);
+            preview.Location = new Point(24, 148);
+            preview.Size = new Size(352, 132);
+
+            Label soundHeading = new Label();
+            soundHeading.Text = "提醒";
+            soundHeading.ForeColor = CardPainter.TitleColor;
+            soundHeading.Font = new Font("Segoe UI", 11f, FontStyle.Bold);
+            soundHeading.AutoSize = true;
+            soundHeading.Location = new Point(24, 292);
+
+            requestedSound = soundEnabled;
+            soundBox.Text = "播放提醒声音";
+            soundBox.ForeColor = CardPainter.TitleColor;
+            soundBox.AutoSize = true;
+            soundBox.Location = new Point(24, 322);
+            soundBox.Checked = soundEnabled;
+            soundBox.CheckedChanged += delegate
+            {
+                volumeSlider.Enabled = soundBox.Checked;
+                if (live)
+                    PublishSound(soundBox.Checked);
+            };
+
+            requestedVolume = UiSettings.ClampVolume(volume);
+            volumeLabel.Text = "音量  " + requestedVolume.ToString() + "%";
+            volumeLabel.ForeColor = CardPainter.MutedColor;
+            volumeLabel.AutoSize = true;
+            volumeLabel.Location = new Point(24, 354);
+
+            volumeSlider.Minimum = 0;
+            volumeSlider.Maximum = 100;
+            volumeSlider.TickFrequency = 10;
+            volumeSlider.SmallChange = 1;
+            volumeSlider.LargeChange = 10;
+            volumeSlider.AutoSize = false;
+            volumeSlider.Size = new Size(352, 40);
+            volumeSlider.Location = new Point(24, 378);
+            volumeSlider.BackColor = CardPainter.Canvas;
+            volumeSlider.Value = requestedVolume;
+            volumeSlider.Enabled = soundEnabled;
+            volumeSlider.ValueChanged += delegate
+            {
+                volumeLabel.Text = "音量  " + volumeSlider.Value.ToString() + "%";
+                if (live)
+                    PublishSound(false);
+            };
+            volumeSlider.MouseUp += delegate
+            {
+                if (live && soundBox.Checked && SoundPreview != null)
+                    SoundPreview(volumeSlider.Value);
+            };
 
             Button done = new Button();
             done.Text = "完成";
@@ -83,7 +139,7 @@ namespace Biubiu
             done.ForeColor = Color.White;
             done.Font = new Font("Segoe UI", 9.5f);
             done.Size = new Size(72, 32);
-            done.Location = new Point(304, 336);
+            done.Location = new Point(304, 424);
             done.Cursor = Cursors.Hand;
             done.DialogResult = DialogResult.OK;
 
@@ -95,6 +151,10 @@ namespace Biubiu
             Controls.Add(slider);
             Controls.Add(hint);
             Controls.Add(preview);
+            Controls.Add(soundHeading);
+            Controls.Add(soundBox);
+            Controls.Add(volumeLabel);
+            Controls.Add(volumeSlider);
             Controls.Add(done);
         }
 
@@ -106,7 +166,21 @@ namespace Biubiu
             percentLabel.Text = requestedPercent.ToString() + "%";
             preview.SampleScale = requestedPercent / 100f;
             preview.Invalidate();
+            if (volumeSlider.Value != requestedVolume)
+                volumeSlider.Value = requestedVolume;
+            volumeLabel.Text = "音量  " + requestedVolume.ToString() + "%";
+            soundBox.Checked = requestedSound;
+            volumeSlider.Enabled = requestedSound;
             live = true;
+        }
+
+        void PublishSound(bool preview)
+        {
+            volumeSlider.Enabled = soundBox.Checked;
+            if (SoundChanged != null)
+                SoundChanged(soundBox.Checked, volumeSlider.Value);
+            if (preview && soundBox.Checked && SoundPreview != null)
+                SoundPreview(volumeSlider.Value);
         }
 
         void Publish()

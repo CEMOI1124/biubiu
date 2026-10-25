@@ -8,6 +8,9 @@ namespace Biubiu
 {
     public sealed class WorkspaceCatalog
     {
+        static WorkspaceCatalog cachedCatalog;
+        static DateTimeOffset catalogUntil;
+
         readonly Dictionary<string, List<string>> pathsByName = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         readonly List<string> names = new List<string>();
 
@@ -17,6 +20,17 @@ namespace Biubiu
         }
 
         public static WorkspaceCatalog Load()
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (cachedCatalog != null && now < catalogUntil)
+                return cachedCatalog;
+            WorkspaceCatalog catalog = ReadCatalog();
+            cachedCatalog = catalog;
+            catalogUntil = now.AddMilliseconds(1000);
+            return catalog;
+        }
+
+        static WorkspaceCatalog ReadCatalog()
         {
             WorkspaceCatalog catalog = new WorkspaceCatalog();
             string root = UserDirectory();

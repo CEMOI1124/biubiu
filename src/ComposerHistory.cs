@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -14,7 +15,7 @@ namespace Biubiu
 
         static List<TaskRecord> cached = new List<TaskRecord>();
         static string cachedPath = "";
-        static DateTimeOffset cachedUntil;
+        static readonly Dictionary<string, string> userSummaries = new Dictionary<string, string>(StringComparer.Ordinal);
 
         public static string DefaultDatabase()
         {
@@ -31,14 +32,11 @@ namespace Biubiu
 
         public static List<TaskRecord> Load(string path, DateTimeOffset now)
         {
-            if (cached != null && string.Equals(path, cachedPath, StringComparison.OrdinalIgnoreCase) && now < cachedUntil)
-                return cached;
             List<TaskRecord> read = ReadDatabase(path, now);
             if (read == null)
-                return cached ?? new List<TaskRecord>();
+                return cached != null && string.Equals(path, cachedPath, StringComparison.OrdinalIgnoreCase) ? cached : new List<TaskRecord>();
             cached = read;
             cachedPath = path ?? "";
-            cachedUntil = now.AddSeconds(2);
             return read;
         }
 
@@ -84,8 +82,11 @@ namespace Biubiu
             record.UpdatedAt = updatedAtMs > 0
                 ? DateTimeOffset.FromUnixTimeMilliseconds(updatedAtMs)
                 : DateTimeOffset.MinValue;
-            bool needsConfirmation = ReadBool(header, "hasBlockingPendingActions") || ReadBool(header, "hasPendingPlan");
-            record.Status = ResolveStatus(ReadString(header, "status"), HasUnfinished(header), needsConfirmation);
+            record.StartedAt = ReadRunStart(header);
+            string composerStatus = ReadString(header, "status");
+            bool unfinished = HasUnfinished(header);
+            bool needsConfirmation = NeedsConfirmation(header, composerStatus, unfinished);
+            record.Status = ResolveStatus(composerStatus, unfinished, needsConfirmation);
             return record;
         }
 
@@ -101,11 +102,25 @@ namespace Biubiu
             if (unfinished)
                 return "running";
             string status = composerStatus == null ? "" : composerStatus.Trim().ToLowerInvariant();
+            if (status == "generating" || status == "loading" || status == "in_progress")
+                return "running";
             if (status == "error" || status == "failed")
                 return "error";
             if (status == "aborted" || status == "cancelled" || status == "canceled")
                 return "aborted";
             return "completed";
+        }
+
+        static bool NeedsConfirmation(Dictionary<string, object> item, string composerStatus, bool unfinished)
+        {
+            if (ReadBool(item, "hasBlockingPendingActions"))
+                return true;
+            if (!ReadBool(item, "hasPendingPlan"))
+                return false;
+            if (unfinished)
+                return false;
+            string status = composerStatus == null ? "" : composerStatus.Trim().ToLowerInvariant();
+            return status != "generating" && status != "loading" && status != "in_progress";
         }
 
         public static string SummarizeUserMessage(string text)
@@ -119,6 +134,20 @@ namespace Biubiu
             if (text.Length > 80)
                 text = text.Substring(0, 80);
             return text;
+        }
+
+        static DateTimeOffset ReadRunStart(Dictionary<string, object> header)
+        {
+            if (header == null || !header.ContainsKey("unfinishedRunAt") || header["unfinishedRunAt"] == null)
+                return DateTimeOffset.MinValue;
+            double number;
+            if (!double.TryParse(header["unfinishedRunAt"].ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number))
+                return DateTimeOffset.MinValue;
+            if (number >= 1000000000000d)
+                return DateTimeOffset.FromUnixTimeMilliseconds((long)number);
+            if (number >= 1000000000d)
+                return DateTimeOffset.FromUnixTimeSeconds((long)number);
+            return DateTimeOffset.MinValue;
         }
 
         static bool HasUnfinished(Dictionary<string, object> header)
@@ -147,6 +176,7 @@ namespace Biubiu
             IntPtr statement = IntPtr.Zero;
             IntPtr lookup = IntPtr.Zero;
             IntPtr range = IntPtr.Zero;
+            IntPtr history = IntPtr.Zero;
             try
             {
                 sqlite3_busy_timeout(db, 300);
@@ -167,16 +197,27 @@ namespace Biubiu
                 }
                 if (sqlite3_prepare_v2(db, "SELECT value FROM cursorDiskKV WHERE key = ?", -1, out lookup, IntPtr.Zero) != 0)
                     return null;
-                if (sqlite3_prepare_v2(db, "SELECT value FROM cursorDiskKV WHERE key >= ? AND key < ?", -1, out range, IntPtr.Zero) != 0)
+                if (sqlite3_prepare_v2(db, "SELECT value FROM cursorDiskKV WHERE key >= ? AND key < ? ORDER BY key DESC LIMIT 2", -1, out range, IntPtr.Zero) != 0)
+                    return null;
+                if (sqlite3_prepare_v2(db, "SELECT value FROM cursorDiskKV WHERE key >= ? AND key < ?", -1, out history, IntPtr.Zero) != 0)
                     return null;
                 foreach (TaskRecord record in newest.Values)
                 {
                     string body = QueryOne(lookup, "composerData:" + record.ConversationId);
                     ApplyBody(record, body);
-                    string user = LatestUserMessage(range, lookup, record.ConversationId);
+                    string latestBubble = "";
+                    string latestTool = "";
+                    string user = LatestUserMessage(range, history, lookup, record.ConversationId, out latestBubble, out latestTool);
                     if (user.Length == 0)
                         continue;
                     record.Summary = user;
+                    string activity = LiveTool(lookup, record.ConversationId, latestBubble, latestTool);
+                    if (activity == "confirm")
+                        record.Status = "confirm";
+                    else if (activity == "running" && record.Status != "confirm")
+                        record.Status = "running";
+                    if (activity.Length > 0 && record.UpdatedAt < now)
+                        record.UpdatedAt = now;
                     tasks.Add(record);
                 }
             }
@@ -192,6 +233,8 @@ namespace Biubiu
                     sqlite3_finalize(lookup);
                 if (range != IntPtr.Zero)
                     sqlite3_finalize(range);
+                if (history != IntPtr.Zero)
+                    sqlite3_finalize(history);
                 sqlite3_close(db);
             }
             return tasks;
@@ -215,45 +258,151 @@ namespace Biubiu
             Dictionary<string, object> body = root as Dictionary<string, object>;
             if (body == null)
                 return;
-            bool needsConfirmation = record.Status == "confirm" || ReadBool(body, "hasBlockingPendingActions") || ReadBool(body, "hasPendingPlan");
-            record.Status = ResolveStatus(ReadString(body, "status"), HasUnfinished(body), needsConfirmation);
+            string composerStatus = ReadString(body, "status");
+            bool unfinished = HasUnfinished(body) || ReadString(body, "chatGenerationUUID").Length > 0;
+            bool needsConfirmation = NeedsConfirmation(body, composerStatus, unfinished);
+            record.Status = ResolveStatus(composerStatus, unfinished, needsConfirmation);
+            DateTimeOffset started = ReadRunStart(body);
+            if (started != DateTimeOffset.MinValue)
+                record.StartedAt = started;
         }
 
-        static string LatestUserMessage(IntPtr range, IntPtr lookup, string conversationId)
+        public static string ToolActivity(string json)
         {
+            if (string.IsNullOrWhiteSpace(json))
+                return "";
+            object root;
+            try
+            {
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                serializer.MaxJsonLength = 20000000;
+                root = serializer.DeserializeObject(json);
+            }
+            catch (Exception)
+            {
+                return "";
+            }
+            Dictionary<string, object> bubble = root as Dictionary<string, object>;
+            Dictionary<string, object> tool = ReadObject(bubble, "toolFormerData");
+            Dictionary<string, object> extra = ReadObject(tool, "additionalData");
+            string status = ReadString(extra, "status").Trim().ToLowerInvariant();
+            if (status == "running")
+                return "running";
+            Dictionary<string, object> review = ReadObject(extra, "reviewData");
+            string reviewStatus = ReadString(review, "status");
+            if (string.Equals(reviewStatus, "REQUESTED", StringComparison.OrdinalIgnoreCase))
+                return "confirm";
+            if (status == "loading" || status == "pending")
+                return "running";
+            return "";
+        }
+
+        static string LiveTool(IntPtr lookup, string conversationId, string latestBubble, string latestTool)
+        {
+            string first = ToolActivity(LoadBubble(lookup, conversationId, latestBubble));
+            if (first.Length > 0 || string.Equals(latestBubble, latestTool, StringComparison.Ordinal))
+                return first;
+            return ToolActivity(LoadBubble(lookup, conversationId, latestTool));
+        }
+
+        static string LoadBubble(IntPtr lookup, string conversationId, string bubbleId)
+        {
+            if (string.IsNullOrEmpty(conversationId) || string.IsNullOrEmpty(bubbleId))
+                return "";
+            return QueryOne(lookup, "bubbleId:" + conversationId + ":" + bubbleId);
+        }
+
+        static string LatestUserMessage(IntPtr range, IntPtr history, IntPtr lookup, string conversationId, out string latestBubble, out string latestTool)
+        {
+            latestBubble = "";
+            latestTool = "";
             if (string.IsNullOrEmpty(conversationId))
                 return "";
             string prefix = "composerConvHeaders:" + conversationId + ":";
-            sqlite3_reset(range);
-            if (BindText(range, 1, prefix) != 0 || BindText(range, 2, prefix + "~") != 0)
+            string userBubble = ReadChunks(range, prefix, true, out latestBubble, out latestTool);
+            string summary = UserSummary(lookup, conversationId, userBubble);
+            if (summary.Length == 0)
+            {
+                string remembered;
+                if (!userSummaries.TryGetValue(conversationId, out remembered))
+                {
+                    string ignoredBubble;
+                    string ignoredTool;
+                    string older = ReadChunks(history, prefix, false, out ignoredBubble, out ignoredTool);
+                    remembered = UserSummary(lookup, conversationId, older);
+                }
+                summary = remembered ?? "";
+            }
+            if (summary.Length > 0)
+                userSummaries[conversationId] = summary;
+            return summary;
+        }
+
+        static string ReadChunks(IntPtr statement, string prefix, bool newestFirst, out string latestBubble, out string latestTool)
+        {
+            latestBubble = "";
+            latestTool = "";
+            sqlite3_reset(statement);
+            if (BindText(statement, 1, prefix) != 0 || BindText(statement, 2, prefix + "~") != 0)
                 return "";
-            string bubbleId = "";
+            List<string> chunks = new List<string>();
+            while (sqlite3_step(statement) == SqliteRow)
+                chunks.Add(ColumnText(statement, 0));
+            string userBubble = "";
+            long newestStart = long.MinValue;
+            long newestToolStart = long.MinValue;
             JavaScriptSerializer serializer = new JavaScriptSerializer();
             serializer.MaxJsonLength = 20000000;
-            while (sqlite3_step(range) == SqliteRow)
+            if (newestFirst)
             {
-                object root;
-                try
-                {
-                    root = serializer.DeserializeObject(ColumnText(range, 0));
-                }
-                catch (Exception)
-                {
+                for (int i = chunks.Count - 1; i >= 0; i--)
+                    WalkChunk(chunks[i], serializer, ref userBubble, ref latestBubble, ref newestStart, ref latestTool, ref newestToolStart);
+            }
+            else
+            {
+                for (int i = 0; i < chunks.Count; i++)
+                    WalkChunk(chunks[i], serializer, ref userBubble, ref latestBubble, ref newestStart, ref latestTool, ref newestToolStart);
+            }
+            return userBubble;
+        }
+
+        static void WalkChunk(string json, JavaScriptSerializer serializer, ref string userBubble, ref string latestBubble, ref long newestStart, ref string latestTool, ref long newestToolStart)
+        {
+            object root;
+            try
+            {
+                root = serializer.DeserializeObject(json);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+            System.Collections.IList items = root as System.Collections.IList;
+            if (items == null)
+                return;
+            for (int i = 0; i < items.Count; i++)
+            {
+                Dictionary<string, object> item = items[i] as Dictionary<string, object>;
+                if (item == null)
                     continue;
-                }
-                System.Collections.IList items = root as System.Collections.IList;
-                if (items == null)
+                string id = ReadString(item, "bubbleId");
+                if (ReadInt(item, "type") == 1 && id.Length > 0)
+                    userBubble = id;
+                long started = ReadLong(item, "startedAtMs");
+                if (id.Length == 0 || started < newestStart)
                     continue;
-                for (int i = 0; i < items.Count; i++)
+                newestStart = started;
+                latestBubble = id;
+                if (id.IndexOf("/s:", StringComparison.Ordinal) < 0 && started >= newestToolStart)
                 {
-                    Dictionary<string, object> item = items[i] as Dictionary<string, object>;
-                    if (item == null || ReadInt(item, "type") != 1)
-                        continue;
-                    string id = ReadString(item, "bubbleId");
-                    if (id.Length > 0)
-                        bubbleId = id;
+                    newestToolStart = started;
+                    latestTool = id;
                 }
             }
+        }
+
+        static string UserSummary(IntPtr lookup, string conversationId, string bubbleId)
+        {
             if (bubbleId.Length == 0)
                 return "";
             string bubble = QueryOne(lookup, "bubbleId:" + conversationId + ":" + bubbleId);
@@ -262,6 +411,8 @@ namespace Biubiu
             object parsed;
             try
             {
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                serializer.MaxJsonLength = 20000000;
                 parsed = serializer.DeserializeObject(bubble);
             }
             catch (Exception)
@@ -285,6 +436,25 @@ namespace Biubiu
         {
             byte[] bytes = Encoding.UTF8.GetBytes(text ?? "");
             return sqlite3_bind_text(statement, index, bytes, bytes.Length, new IntPtr(-1));
+        }
+
+        static long ReadLong(Dictionary<string, object> item, string key)
+        {
+            if (item == null)
+                return 0;
+            object value;
+            if (!item.TryGetValue(key, out value) || value == null)
+                return 0;
+            if (value is long)
+                return (long)value;
+            if (value is int)
+                return (int)value;
+            if (value is decimal)
+                return (long)(decimal)value;
+            long parsed;
+            if (!long.TryParse(value.ToString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out parsed))
+                return 0;
+            return parsed;
         }
 
         static int ReadInt(Dictionary<string, object> item, string key)
@@ -350,13 +520,11 @@ namespace Biubiu
 
         static string ColumnText(IntPtr statement, int column)
         {
+            int length = sqlite3_column_bytes(statement, column);
+            if (length <= 0)
+                return "";
             IntPtr pointer = sqlite3_column_text(statement, column);
             if (pointer == IntPtr.Zero)
-                return "";
-            int length = 0;
-            while (Marshal.ReadByte(pointer, length) != 0)
-                length++;
-            if (length == 0)
                 return "";
             byte[] bytes = new byte[length];
             Marshal.Copy(pointer, bytes, 0, length);
@@ -380,6 +548,9 @@ namespace Biubiu
 
         [DllImport("winsqlite3", CallingConvention = CallingConvention.Cdecl)]
         static extern int sqlite3_step(IntPtr statement);
+
+        [DllImport("winsqlite3", CallingConvention = CallingConvention.Cdecl)]
+        static extern int sqlite3_column_bytes(IntPtr statement, int column);
 
         [DllImport("winsqlite3", CallingConvention = CallingConvention.Cdecl)]
         static extern IntPtr sqlite3_column_text(IntPtr statement, int column);

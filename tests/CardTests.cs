@@ -15,12 +15,14 @@ static class CardTests
         TestBranch();
         TestSettings();
         TestCards();
+        TestConfirmNotHidden();
         TestLatestHistory();
         TestComposer();
         TestOrder();
         TestNotes();
         TestPainter();
         TestScale();
+        TestElapsed();
         return failures;
     }
 
@@ -64,6 +66,8 @@ static class CardTests
                 Fail("missing layout defaulted to vertical");
             if (Math.Abs(UiSettings.LoadScale(path) - 1f) > 0.001f)
                 Fail("missing scale defaulted away from 1");
+            if (!UiSettings.LoadSoundEnabled(path) || UiSettings.LoadVolume(path) != 100)
+                Fail("sound defaulted away from on and full volume");
             UiSettings.SaveVertical(path, true);
             if (!UiSettings.LoadVertical(path))
                 Fail("vertical layout was not saved");
@@ -92,6 +96,17 @@ static class CardTests
             UiSettings.SaveScale(path, 3f);
             if (UiSettings.LoadScale(path) > 1.6f || UiSettings.LoadScale(path) < 1.6f)
                 Fail("scale was not limited");
+            UiSettings.SaveSound(path, false, 35);
+            if (UiSettings.LoadSoundEnabled(path) || UiSettings.LoadVolume(path) != 35)
+                Fail("the sound setting was not saved");
+            if (Math.Abs(UiSettings.LoadScale(path) - 1.6f) > 0.001f || !UiSettings.LoadPinned(path) || UiSettings.LoadVertical(path))
+                Fail("saving the sound cleared the layout");
+            UiSettings.SaveScale(path, 1f);
+            if (UiSettings.LoadSoundEnabled(path) || UiSettings.LoadVolume(path) != 35)
+                Fail("saving the scale cleared the sound");
+            UiSettings.SaveSound(path, true, 140);
+            if (!UiSettings.LoadSoundEnabled(path) || UiSettings.LoadVolume(path) != 100)
+                Fail("volume was not limited");
         }
         finally
         {
@@ -139,6 +154,33 @@ static class CardTests
             Fail("duplicate project names were given a task");
     }
 
+    static void TestConfirmNotHidden()
+    {
+        CursorWindowInfo window = Window(11, "Biubiu", "D:/work/Biubiu");
+        List<CursorWindowInfo> windows = new List<CursorWindowInfo>();
+        windows.Add(window);
+        List<TaskRecord> tasks = new List<TaskRecord>();
+        tasks.Add(Task("c1", "D:\\work\\Biubiu", "正在改登录", "running", "2026-10-23T13:00:00+08:00"));
+        tasks.Add(Task("c1", "D:\\work\\Biubiu", "正在改登录", "confirm", "2026-10-23T13:00:02+08:00"));
+        List<ProjectCard> cards = ProjectCards.Build(windows, tasks, null);
+        if (cards[0].Status != "confirm")
+            Fail("a confirmation was hidden by the running hook");
+
+        tasks = new List<TaskRecord>();
+        tasks.Add(Task("old", "D:\\work\\Biubiu", "旧确认", "confirm", "2026-10-23T12:00:00+08:00"));
+        tasks.Add(Task("new", "D:\\work\\Biubiu", "新任务", "running", "2026-10-23T13:00:00+08:00"));
+        cards = ProjectCards.Build(windows, tasks, null);
+        if (cards[0].Status != "running" || cards[0].Summary != "新任务")
+            Fail("an older confirmation hid the newer run");
+
+        tasks = new List<TaskRecord>();
+        tasks.Add(Task("c1", "D:\\work\\Biubiu", "正在改登录", "running", "2026-10-23T13:00:00+08:00"));
+        tasks.Add(Task("c1", "D:\\work\\Biubiu", "登录已完成", "completed", "2026-10-23T13:00:01+08:00"));
+        cards = ProjectCards.Build(windows, tasks, null);
+        if (cards[0].Status != "completed")
+            Fail("a finished run stayed on the progress bar");
+    }
+
     static void TestLatestHistory()
     {
         CursorWindowInfo window = Window(1, "cemoi", "");
@@ -173,6 +215,12 @@ static class CardTests
         TaskRecord older = ComposerHistory.FromHeader(runningJson, now.AddMinutes(-11).ToUnixTimeMilliseconds(), now);
         if (older == null || older.Status != "running")
             Fail("a long unfinished composer was hidden");
+        string timedJson = "{\"composerId\":\"c4\",\"name\":\"timed\",\"unifiedMode\":\"agent\",\"unfinishedRunAt\":1761321775000,\"workspaceIdentifier\":{\"uri\":{\"fsPath\":\"D:\\\\work\\\\Biubiu\"}}}";
+        TaskRecord timed = ComposerHistory.FromHeader(timedJson, now.ToUnixTimeMilliseconds(), now);
+        if (timed == null || timed.Status != "running" || timed.StartedAt != DateTimeOffset.FromUnixTimeMilliseconds(1761321775000))
+            Fail("a running composer did not keep its start time");
+        if (ComposerHistory.FromHeader("{\"composerId\":\"c5\",\"name\":\"flag\",\"unifiedMode\":\"agent\",\"unfinishedRunAt\":1,\"workspaceIdentifier\":{\"uri\":{\"fsPath\":\"D:\\\\work\\\\Biubiu\"}}}", 1, now).StartedAt != DateTimeOffset.MinValue)
+            Fail("a flag was treated as a start time");
         if (ComposerHistory.FromHeader("{\"name\":\"chat\",\"unifiedMode\":\"chat\",\"workspaceIdentifier\":{\"uri\":{\"fsPath\":\"D:\\\\work\\\\Biubiu\"}}}", 1, now) != null)
             Fail("a chat was treated as a task");
         if (ComposerHistory.ResolveStatus("aborted", true) != "running")
@@ -183,6 +231,27 @@ static class CardTests
             Fail("a failed conversation was not marked failed");
         if (ComposerHistory.ResolveStatus("generating", true, true) != "confirm")
             Fail("a confirmation request stayed on the progress bar");
+        if (ComposerHistory.ResolveStatus("generating", false) != "running")
+            Fail("a normal run was not marked running");
+        string once = "{\"toolFormerData\":{\"name\":\"run_terminal_command_v2\",\"additionalData\":{\"status\":\"running\",\"reviewData\":{\"status\":\"Done\"}}}}";
+        if (ComposerHistory.ToolActivity(once) != "running")
+            Fail("a single run command was ignored");
+        string started = "{\"toolFormerData\":{\"name\":\"run_terminal_command_v2\",\"additionalData\":{\"status\":\"running\",\"reviewData\":{\"status\":\"REQUESTED\"}}}}";
+        if (ComposerHistory.ToolActivity(started) != "running")
+            Fail("an approved command stayed on the confirmation card");
+        string ask = "{\"toolFormerData\":{\"name\":\"run_terminal_command_v2\",\"additionalData\":{\"status\":\"pending\",\"reviewData\":{\"status\":\"REQUESTED\"}}}}";
+        if (ComposerHistory.ToolActivity(ask) != "confirm")
+            Fail("a run approval was not waiting");
+        if (ComposerHistory.ToolActivity("{\"toolFormerData\":{\"name\":\"run_terminal_command_v2\",\"additionalData\":{\"status\":\"success\",\"reviewData\":{\"status\":\"Done\"}}}}") != "")
+            Fail("a finished command stayed active");
+        string planWaiting = "{\"composerId\":\"c6\",\"name\":\"plan\",\"unifiedMode\":\"agent\",\"hasPendingPlan\":true,\"workspaceIdentifier\":{\"uri\":{\"fsPath\":\"D:\\\\work\\\\Biubiu\"}}}";
+        TaskRecord plan = ComposerHistory.FromHeader(planWaiting, now.ToUnixTimeMilliseconds(), now);
+        if (plan == null || plan.Status != "confirm")
+            Fail("a plan review was not waiting");
+        string planRunning = "{\"composerId\":\"c7\",\"name\":\"build\",\"unifiedMode\":\"agent\",\"hasPendingPlan\":true,\"unfinishedRunAt\":1,\"workspaceIdentifier\":{\"uri\":{\"fsPath\":\"D:\\\\work\\\\Biubiu\"}}}";
+        TaskRecord building = ComposerHistory.FromHeader(planRunning, now.ToUnixTimeMilliseconds(), now);
+        if (building == null || building.Status != "running")
+            Fail("an accepted plan stayed on the confirmation card");
         string waitingJson = "{\"composerId\":\"c3\",\"name\":\"wait\",\"unifiedMode\":\"agent\",\"unfinishedRunAt\":1,\"hasBlockingPendingActions\":true,\"workspaceIdentifier\":{\"uri\":{\"fsPath\":\"D:\\\\work\\\\Biubiu\"}}}";
         TaskRecord waiting = ComposerHistory.FromHeader(waitingJson, now.ToUnixTimeMilliseconds(), now);
         if (waiting == null || waiting.Status != "confirm")
@@ -274,8 +343,8 @@ static class CardTests
         completed.Summary = "登录已完成";
         completed.Status = "completed";
 
-        using (Bitmap start = Draw(running, 0.05f))
-        using (Bitmap end = Draw(running, 0.95f))
+        using (Bitmap start = Draw(running, 0.08f))
+        using (Bitmap end = Draw(running, 0.72f))
         using (Bitmap done = Draw(completed, 0f))
         {
             Rectangle bar = CardPainter.ProgressBar(new Rectangle(0, 0, CardPainter.CardWidth, CardPainter.CardHeight));
@@ -283,9 +352,9 @@ static class CardTests
             Color rightStart = start.GetPixel(bar.Right - 8, bar.Top + 2);
             Color leftEnd = end.GetPixel(bar.Left + 8, bar.Top + 2);
             Color rightEnd = end.GetPixel(bar.Right - 8, bar.Top + 2);
-            if (leftStart.ToArgb() != CardPainter.RunningHighlight.ToArgb() || rightStart.ToArgb() == CardPainter.RunningHighlight.ToArgb())
+            if (Shade(leftStart) + 80 >= Shade(rightStart))
                 Fail("sweep did not start on the left: " + leftStart + " / " + rightStart);
-            if (rightEnd.ToArgb() != CardPainter.RunningHighlight.ToArgb() || leftEnd.ToArgb() == CardPainter.RunningHighlight.ToArgb())
+            if (Shade(rightEnd) + 80 >= Shade(leftEnd))
                 Fail("sweep did not reach the right: " + leftEnd + " / " + rightEnd);
             if (start.GetPixel(0, 0).ToArgb() != CardPainter.Canvas.ToArgb())
                 Fail("card corners are still square");
@@ -341,6 +410,46 @@ static class CardTests
         {
             CardPainter.SetScale(1f);
         }
+    }
+
+    static void TestElapsed()
+    {
+        DateTimeOffset start = DateTimeOffset.Parse("2026-10-25T08:00:00+08:00");
+        DateTimeOffset end = start.AddHours(2).AddMinutes(2).AddSeconds(55);
+        if (RunClocks.Text(start, end, end.AddHours(3)) != "02:02:55")
+            Fail("a finished run did not keep 02:02:55");
+        if (RunClocks.Text(start, DateTimeOffset.MinValue, start.AddSeconds(5)) != "00:00:05")
+            Fail("a running clock did not count seconds");
+        if (RunClocks.Text(DateTimeOffset.MinValue, end, end) != "")
+            Fail("an idle card showed a clock");
+
+        ProjectCard card = new ProjectCard();
+        card.ConversationId = "conv-elapsed";
+        card.Status = "running";
+        card.StartedAt = start;
+        Dictionary<string, RunClocks.Clock> clocks = new Dictionary<string, RunClocks.Clock>();
+        RunClocks.Apply(card, start.AddMinutes(1), clocks);
+        card.Status = "completed";
+        card.EndedAt = end;
+        RunClocks.Apply(card, end.AddHours(4), clocks);
+        card.EndedAt = end.AddHours(4);
+        RunClocks.Apply(card, end.AddHours(5), clocks);
+        if (RunClocks.Text(card.StartedAt, card.EndedAt, end.AddHours(5)) != "02:02:55")
+            Fail("a later update changed the finished duration");
+
+        Rectangle bounds = new Rectangle(0, 0, CardPainter.CardWidth, CardPainter.CardHeight);
+        Rectangle time = CardPainter.ElapsedBounds(bounds, "02:02:55");
+        Rectangle check = CardPainter.CheckBounds(bounds);
+        if (time.Width < 40 || time.Right > check.Left - 4 || time.Top < 4)
+            Fail("the timer overlaps the check mark");
+        Rectangle note = CardPainter.NoteBounds(bounds, "Biubiu", "这是一段很长的备注用来占满标题旁边的位置", false, true);
+        if (note.Right > time.Left)
+            Fail("the note overlaps the timer");
+    }
+
+    static int Shade(Color color)
+    {
+        return color.R + color.G + color.B;
     }
 
     static Bitmap Draw(ProjectCard card, float phase)

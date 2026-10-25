@@ -13,6 +13,7 @@ namespace Biubiu
         public string WorkspacePath;
         public string Summary;
         public string Status;
+        public DateTimeOffset StartedAt;
         public DateTimeOffset UpdatedAt;
     }
 
@@ -121,15 +122,26 @@ namespace Biubiu
                 record.WorkspacePath = NormalizeWorkspacePath(ReadString(item, "workspacePath"));
                 record.Summary = ReadString(item, "summary");
                 record.Status = ReadString(item, "status");
+                record.StartedAt = ReadTime(item, "startedAt");
                 DateTimeOffset updated;
                 if (!DateTimeOffset.TryParse(ReadString(item, "updatedAt"), out updated))
                     updated = DateTimeOffset.MinValue;
                 record.UpdatedAt = updated;
                 if (record.Status == "running" && (updated == DateTimeOffset.MinValue || now - updated > StaleAfter))
                     record.Status = "unknown";
+                else if (record.Status == "running" && record.StartedAt == DateTimeOffset.MinValue)
+                    record.StartedAt = updated;
                 result.Tasks.Add(record);
             }
             return result;
+        }
+
+        static DateTimeOffset ReadTime(Dictionary<string, object> item, string key)
+        {
+            DateTimeOffset value;
+            if (!DateTimeOffset.TryParse(ReadString(item, key), out value))
+                return DateTimeOffset.MinValue;
+            return value;
         }
 
         static string ReadString(Dictionary<string, object> item, string key)

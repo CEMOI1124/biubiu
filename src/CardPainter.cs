@@ -1,6 +1,8 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace Biubiu
@@ -24,6 +26,9 @@ namespace Biubiu
         public static readonly Color NoteHint = Color.FromArgb(255, 168, 162, 158);
         public const int Radius = 16;
         static float scale = 1f;
+        static Bitmap comet;
+        static int cometWidth;
+        static int cometHeight;
 
         public static float Scale
         {
@@ -60,9 +65,14 @@ namespace Biubiu
             return new Font("Segoe UI", 9f * scale);
         }
 
+        public static Font CreateElapsedFont()
+        {
+            return new Font("Segoe UI", 8.5f * scale);
+        }
+
         public static Rectangle ProgressBar(Rectangle bounds)
         {
-            return new Rectangle(Px(18), bounds.Height - Px(30), bounds.Width - Px(36), Px(12));
+            return new Rectangle(Px(18), bounds.Height - Px(28), bounds.Width - Px(36), Px(8));
         }
 
         public static Rectangle CheckBounds(Rectangle bounds)
@@ -70,10 +80,41 @@ namespace Biubiu
             return new Rectangle(bounds.Width - Px(32), Px(14), Px(16), Px(16));
         }
 
+        public static Rectangle ElapsedBounds(Rectangle bounds, string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return Rectangle.Empty;
+            using (Font font = CreateElapsedFont())
+            {
+                Size size = TextRenderer.MeasureText(text, font, new Size(int.MaxValue, Px(24)), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                Rectangle check = CheckBounds(bounds);
+                int width = size.Width + Px(2);
+                int height = Math.Max(size.Height, Px(16));
+                int right = check.Left - Px(8);
+                int top = check.Top + (check.Height - height) / 2;
+                return new Rectangle(right - width, top, width, height);
+            }
+        }
+
+        static int ElapsedReserve(Rectangle bounds)
+        {
+            using (Font font = CreateElapsedFont())
+            {
+                Size size = TextRenderer.MeasureText("88:88:88", font, new Size(int.MaxValue, Px(24)), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                return CheckBounds(bounds).Width + Px(32) + size.Width + Px(8);
+            }
+        }
+
         public static Rectangle TitleBounds(Rectangle bounds, string project)
         {
+            return TitleBounds(bounds, project, false);
+        }
+
+        public static Rectangle TitleBounds(Rectangle bounds, string project, bool reserveElapsed)
+        {
             string title = string.IsNullOrEmpty(project) ? "未命名" : project;
-            int max = bounds.Width - Px(124);
+            int reserved = reserveElapsed ? ElapsedReserve(bounds) + Px(70) : Px(124);
+            int max = bounds.Width - reserved;
             if (max < Px(48))
                 max = Px(48);
             using (Font font = CreateTitleFont())
@@ -90,9 +131,15 @@ namespace Biubiu
 
         public static Rectangle NoteBounds(Rectangle bounds, string project, string note, bool editing)
         {
-            Rectangle title = TitleBounds(bounds, project);
+            return NoteBounds(bounds, project, note, editing, false);
+        }
+
+        public static Rectangle NoteBounds(Rectangle bounds, string project, string note, bool editing, bool reserveElapsed)
+        {
+            Rectangle title = TitleBounds(bounds, project, reserveElapsed);
             int left = title.Right + Px(6);
-            int right = bounds.Width - Px(36);
+            int rightGap = reserveElapsed ? ElapsedReserve(bounds) : Px(36);
+            int right = bounds.Width - rightGap;
             int max = right - left;
             if (max < Px(24))
                 max = Px(24);
@@ -177,24 +224,18 @@ namespace Biubiu
                 graphics.FillPath(fill, innerPath);
 
             if (running)
-            {
-                Rectangle bar = ProgressBar(bounds);
-                using (GraphicsPath trackPath = RoundRect(bar, Px(6)))
-                using (Brush track = new SolidBrush(Track))
-                {
-                    graphics.FillPath(track, trackPath);
-                    int band = Px(72);
-                    float center = bar.Left + phase * bar.Width;
-                    Rectangle shine = new Rectangle((int)center - band / 2, bar.Top, band, bar.Height);
-                    graphics.SetClip(trackPath);
-                    using (Brush highlight = new SolidBrush(RunningHighlight))
-                        graphics.FillRectangle(highlight, shine);
-                    graphics.ResetClip();
-                }
-            }
+                DrawRunningBar(graphics, bounds, phase);
 
             if (completed)
                 DrawCheck(graphics, CheckBounds(bounds));
+
+            string elapsed = RunClocks.Text(card.StartedAt, card.EndedAt, DateTimeOffset.Now);
+            bool reserveElapsed = elapsed.Length > 0;
+            if (reserveElapsed)
+            {
+                using (Font elapsedFont = CreateElapsedFont())
+                    TextRenderer.DrawText(graphics, elapsed, elapsedFont, ElapsedBounds(bounds, elapsed), TitleColor, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            }
 
             string project = string.IsNullOrEmpty(card.Project) ? "未命名" : card.Project;
             string summary = SummaryText(card);
@@ -210,8 +251,8 @@ namespace Biubiu
             using (Font titleFont = CreateTitleFont())
             using (Font bodyFont = CreateBodyFont())
             {
-                TextRenderer.DrawText(graphics, project, titleFont, TitleBounds(bounds, card.Project), TitleColor, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-                Rectangle note = NoteBounds(bounds, card.Project, card.Note, editingNote);
+                TextRenderer.DrawText(graphics, project, titleFont, TitleBounds(bounds, card.Project, reserveElapsed), TitleColor, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                Rectangle note = NoteBounds(bounds, card.Project, card.Note, editingNote, reserveElapsed);
                 using (GraphicsPath notePath = RoundRect(note, Px(8)))
                 using (Brush noteBrush = new SolidBrush(ChipFill))
                 using (Pen notePen = new Pen(IdleBorder))
@@ -238,11 +279,11 @@ namespace Biubiu
             if (status == "confirm")
                 return "\u8bf7\u8fd4\u56de Cursor \u786e\u8ba4\u6216\u6267\u884c\u6307\u4ee4";
             if (status == "aborted")
-                return Prefix("已中止", card.Summary);
+                return Prefix("⏹已中止", card.Summary);
             if (status == "error")
-                return Prefix("出错", card.Summary);
+                return Prefix("❌出错了", card.Summary);
             if (status == "unknown")
-                return Prefix("状态未知", card.Summary);
+                return Prefix("❓状态未知", card.Summary);
             return card.Summary ?? "";
         }
 
@@ -251,6 +292,99 @@ namespace Biubiu
             if (string.IsNullOrEmpty(summary))
                 return label;
             return label + "  " + summary;
+        }
+
+        static void DrawRunningBar(Graphics graphics, Rectangle bounds, float phase)
+        {
+            Rectangle bar = ProgressBar(bounds);
+            if (bar.Width < 2 || bar.Height < 2)
+                return;
+            int core = bar.Height;
+            int tail = Px(156);
+            float center = bar.Left - core / 2f + phase * (bar.Width + core + tail);
+            float headLeft = center - core / 2f - bar.Left;
+            Bitmap stamp = CometStamp(bar.Width, bar.Height, headLeft, tail, core, RunningHighlight, Track);
+            GraphicsState state = graphics.Save();
+            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            graphics.PixelOffsetMode = PixelOffsetMode.None;
+            graphics.DrawImageUnscaled(stamp, bar.Left, bar.Top);
+            graphics.Restore(state);
+        }
+
+        static Bitmap CometStamp(int width, int height, float headLeft, int tail, int core, Color color, Color track)
+        {
+            if (comet == null || cometWidth != width || cometHeight != height)
+            {
+                if (comet != null)
+                    comet.Dispose();
+                comet = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+                cometWidth = width;
+                cometHeight = height;
+            }
+            BitmapData bits = comet.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            int stride = bits.Stride;
+            byte[] pixels = new byte[stride * height];
+            float fadeStart = headLeft - tail;
+            float fadeWidth = tail + core / 2f;
+            float headCenter = headLeft + core / 2f;
+            float radius = height / 2f;
+            for (int y = 0; y < height; y++)
+            {
+                float py = y + 0.5f;
+                for (int x = 0; x < width; x++)
+                {
+                    float px = x + 0.5f;
+                    float capsule = Capsule(px, py, width, radius);
+                    if (capsule <= 0f)
+                        continue;
+                    float ink = 0f;
+                    if (fadeWidth > 1f)
+                    {
+                        float along = (px - fadeStart) / fadeWidth;
+                        if (along > 0f && along < 1f)
+                            ink = along * along * along;
+                    }
+                    float dx = px - headCenter;
+                    float dy = py - radius;
+                    float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+                    float head = radius + 0.5f - dist;
+                    if (head > ink)
+                        ink = head > 1f ? 1f : (head > 0f ? head : 0f);
+                    if (ink > 1f)
+                        ink = 1f;
+                    int alpha = (int)Math.Round(255f * capsule);
+                    if (alpha <= 0)
+                        continue;
+                    if (alpha > 255)
+                        alpha = 255;
+                    int i = y * stride + x * 4;
+                    pixels[i] = (byte)Math.Round(color.B * ink + track.B * (1f - ink));
+                    pixels[i + 1] = (byte)Math.Round(color.G * ink + track.G * (1f - ink));
+                    pixels[i + 2] = (byte)Math.Round(color.R * ink + track.R * (1f - ink));
+                    pixels[i + 3] = (byte)alpha;
+                }
+            }
+            Marshal.Copy(pixels, 0, bits.Scan0, pixels.Length);
+            comet.UnlockBits(bits);
+            return comet;
+        }
+
+        static float Capsule(float x, float y, int width, float radius)
+        {
+            float cx = x;
+            if (cx < radius)
+                cx = radius;
+            else if (cx > width - radius)
+                cx = width - radius;
+            float dx = x - cx;
+            float dy = y - radius;
+            float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+            float cover = radius + 0.5f - dist;
+            if (cover >= 1f)
+                return 1f;
+            if (cover <= 0f)
+                return 0f;
+            return cover;
         }
 
         static void DrawCheck(Graphics graphics, Rectangle bounds)

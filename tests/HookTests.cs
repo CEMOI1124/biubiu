@@ -196,6 +196,9 @@ static class HookTests
                 Fail("start hook did not store the running task");
             if (record != null && (string)record["workspacePath"] != "d:\\work\\Biubiu")
                 Fail("start hook stored path " + record["workspacePath"]);
+            string startedAt = record == null ? "" : record["startedAt"] as string;
+            if (string.IsNullOrEmpty(startedAt))
+                Fail("start hook did not record the start time");
             if (File.ReadAllText(tasks, Encoding.UTF8).IndexOf("hidden@example.com", StringComparison.Ordinal) >= 0)
                 Fail("task file stored the user email");
 
@@ -209,6 +212,8 @@ static class HookTests
             record = ReadTask(tasks, "conv-1");
             if (record == null || (string)record["status"] != "completed" || (string)record["summary"] != prompt)
                 Fail("stop hook did not keep the summary");
+            if (record == null || (string)record["startedAt"] != startedAt)
+                Fail("stop hook replaced the start time");
 
             string beforeInvalid = File.ReadAllText(tasks, Encoding.UTF8);
             HookRun invalid = RunPiped(script, "beforeSubmitPrompt", "not-json", tasks);

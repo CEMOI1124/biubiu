@@ -19,6 +19,7 @@ if (-not (Test-Path $csc)) {
     "/win32icon:$root\assets\biubiu.ico" `
     "/resource:$root\hooks\biubiu-status.ps1,Biubiu.status.ps1" `
     "/resource:$root\assets\biubiu-img.png,Biubiu.icon.png" `
+    "/resource:$root\assets\remind.wav,Biubiu.remind.wav" `
     "$root\src\CursorTitle.cs" `
     "$root\src\WorkspaceCatalog.cs" `
     "$root\src\CursorWindows.cs" `
@@ -30,7 +31,9 @@ if (-not (Test-Path $csc)) {
     "$root\src\ProjectCards.cs" `
     "$root\src\CardOrder.cs" `
     "$root\src\CardNotes.cs" `
+    "$root\src\RunClocks.cs" `
     "$root\src\UiSettings.cs" `
+    "$root\src\Reminder.cs" `
     "$root\src\CardPainter.cs" `
     "$root\src\AppIcon.cs" `
     "$root\src\AppMenu.cs" `
@@ -51,6 +54,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     "$root\src\ProjectCards.cs" `
     "$root\src\CardOrder.cs" `
     "$root\src\CardNotes.cs" `
+    "$root\src\RunClocks.cs" `
     "$root\src\UiSettings.cs" `
     "$root\src\CardPainter.cs" `
     "$root\tests\CursorTitleTests.cs" `

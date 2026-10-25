@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace Biubiu
@@ -15,15 +16,23 @@ namespace Biubiu
         readonly Button pinButton = new Button();
         readonly Label emptyLabel = new Label();
         readonly Label statusLabel = new Label();
-        readonly Timer refreshTimer = new Timer();
-        readonly Timer shimmerTimer = new Timer();
+        readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer shimmerTimer = new System.Windows.Forms.Timer();
         readonly Dictionary<long, ProjectCardControl> views = new Dictionary<long, ProjectCardControl>();
         readonly Dictionary<string, string> notes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        readonly Dictionary<string, RunClocks.Clock> runClocks = RunClocks.Load(RunClocks.DefaultPath());
+        readonly Dictionary<long, string> seenStatus = new Dictionary<long, string>();
         readonly string notesPath = CardNotes.DefaultPath();
+        readonly string runsPath = RunClocks.DefaultPath();
+        readonly string settingsPath = UiSettings.DefaultPath();
         bool vertical;
         bool pinned;
+        bool alertsArmed;
+        bool soundEnabled;
+        int soundVolume;
         bool menuOpen;
         float phase;
+        int reloading;
         AppMenuForm openMenu;
         DateTime menuClosedUtc;
         Font emptyFont;
@@ -34,9 +43,11 @@ namespace Biubiu
             Font = new Font("Segoe UI", 9f);
             BackColor = CardPainter.Canvas;
             StartPosition = FormStartPosition.CenterScreen;
-            vertical = UiSettings.LoadVertical(UiSettings.DefaultPath());
-            pinned = UiSettings.LoadPinned(UiSettings.DefaultPath());
-            CardPainter.SetScale(UiSettings.LoadScale(UiSettings.DefaultPath()));
+            vertical = UiSettings.LoadVertical(settingsPath);
+            pinned = UiSettings.LoadPinned(settingsPath);
+            CardPainter.SetScale(UiSettings.LoadScale(settingsPath));
+            soundEnabled = UiSettings.LoadSoundEnabled(settingsPath);
+            soundVolume = UiSettings.LoadVolume(settingsPath);
             TopMost = pinned;
             try
             {
@@ -93,9 +104,9 @@ namespace Biubiu
             Controls.Add(statusLabel);
             Controls.Add(header);
 
-            refreshTimer.Interval = 1000;
+            refreshTimer.Interval = 100;
             refreshTimer.Tick += delegate { Reload(); };
-            shimmerTimer.Interval = 33;
+            shimmerTimer.Interval = 16;
             shimmerTimer.Tick += delegate { AdvanceShimmer(); };
             ApplyOrientation(false);
             Reload();
@@ -243,9 +254,11 @@ namespace Biubiu
 
         void OpenSettings()
         {
-            using (SettingsForm dialog = new SettingsForm(CardPainter.Scale))
+            using (SettingsForm dialog = new SettingsForm(CardPainter.Scale, soundEnabled, soundVolume))
             {
                 dialog.ScaleChanged += ApplyScale;
+                dialog.SoundChanged += ApplySound;
+                dialog.SoundPreview += PreviewSound;
                 dialog.ShowDialog(this);
             }
         }
@@ -264,7 +277,7 @@ namespace Biubiu
             ApplyEmptyFont();
             try
             {
-                UiSettings.SaveScale(UiSettings.DefaultPath(), CardPainter.Scale);
+                UiSettings.SaveScale(settingsPath, CardPainter.Scale);
             }
             catch (Exception ex)
             {
@@ -273,6 +286,27 @@ namespace Biubiu
             FitWindow();
             UpdateScrollExtent();
             cards.PerformLayout();
+        }
+
+        void ApplySound(bool enabled, int volume)
+        {
+            soundEnabled = enabled;
+            soundVolume = UiSettings.ClampVolume(volume);
+            try
+            {
+                UiSettings.SaveSound(settingsPath, soundEnabled, soundVolume);
+            }
+            catch (Exception ex)
+            {
+                SetStatus(ex.Message);
+            }
+        }
+
+        void PreviewSound(int volume)
+        {
+            if (!soundEnabled)
+                return;
+            Reminder.Play(volume);
         }
 
         void ApplyEmptyFont()
@@ -290,7 +324,7 @@ namespace Biubiu
             TopMost = pinned;
             try
             {
-                UiSettings.SavePinned(UiSettings.DefaultPath(), pinned);
+                UiSettings.SavePinned(settingsPath, pinned);
             }
             catch (Exception ex)
             {
@@ -311,7 +345,7 @@ namespace Biubiu
             vertical = !vertical;
             try
             {
-                UiSettings.SaveVertical(UiSettings.DefaultPath(), vertical);
+                UiSettings.SaveVertical(settingsPath, vertical);
             }
             catch (Exception ex)
             {
@@ -384,29 +418,68 @@ namespace Biubiu
 
         void Reload()
         {
-            try
+            if (!IsHandleCreated)
             {
-                List<CursorWindowInfo> windows = CursorWindows.List();
-                TaskLoadResult loaded = TaskBoard.Load(TaskBoard.DefaultPath(), DateTimeOffset.Now);
-                if (!loaded.Ok)
-                    SetStatus(loaded.Error ?? "");
-                List<TaskRecord> tasks = loaded.Tasks ?? new List<TaskRecord>();
-                List<TaskRecord> history = ComposerHistory.Load(ComposerHistory.DefaultDatabase(), DateTimeOffset.Now);
-                for (int i = 0; i < history.Count; i++)
-                    tasks.Add(history[i]);
-                List<ProjectCard> next = ProjectCards.Build(windows, tasks, null);
-                for (int i = 0; i < next.Count; i++)
+                IntPtr created = Handle;
+                if (created == IntPtr.Zero)
+                    return;
+            }
+            if (Interlocked.Exchange(ref reloading, 1) == 1)
+                return;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                List<CursorWindowInfo> windows = null;
+                List<TaskRecord> tasks = null;
+                string error = null;
+                try
                 {
-                    string note;
-                    if (notes.TryGetValue(next[i].NoteKey, out note))
-                        next[i].Note = note;
+                    windows = CursorWindows.List();
+                    TaskLoadResult loaded = TaskBoard.Load(TaskBoard.DefaultPath(), DateTimeOffset.Now);
+                    if (!loaded.Ok)
+                        error = loaded.Error ?? "";
+                    tasks = loaded.Tasks ?? new List<TaskRecord>();
+                    List<TaskRecord> history = ComposerHistory.Load(ComposerHistory.DefaultDatabase(), DateTimeOffset.Now);
+                    for (int i = 0; i < history.Count; i++)
+                        tasks.Add(history[i]);
                 }
-                Sync(next);
-            }
-            catch (Exception ex)
+                catch (Exception ex)
+                {
+                    error = ex.Message;
+                }
+                try
+                {
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(error))
+                                SetStatus(error);
+                            if (windows != null && tasks != null)
+                                ShowCards(windows, tasks);
+                        }
+                        finally
+                        {
+                            Interlocked.Exchange(ref reloading, 0);
+                        }
+                    });
+                }
+                catch (Exception)
+                {
+                    Interlocked.Exchange(ref reloading, 0);
+                }
+            });
+        }
+
+        void ShowCards(List<CursorWindowInfo> windows, List<TaskRecord> tasks)
+        {
+            List<ProjectCard> next = ProjectCards.Build(windows, tasks, null);
+            for (int i = 0; i < next.Count; i++)
             {
-                SetStatus(ex.Message);
+                string note;
+                if (notes.TryGetValue(next[i].NoteKey, out note))
+                    next[i].Note = note;
             }
+            Sync(next);
         }
 
         void Sync(List<ProjectCard> next)
@@ -421,9 +494,13 @@ namespace Biubiu
             List<ProjectCard> ordered = CardOrder.Stabilize(previous, next);
 
             Dictionary<long, bool> seen = new Dictionary<long, bool>();
+            bool clocksChanged = false;
+            DateTimeOffset now = DateTimeOffset.Now;
             for (int i = 0; i < ordered.Count; i++)
             {
                 ProjectCard card = ordered[i];
+                if (RunClocks.Apply(card, now, runClocks))
+                    clocksChanged = true;
                 seen[card.Hwnd] = true;
                 ProjectCardControl view;
                 if (!views.TryGetValue(card.Hwnd, out view))
@@ -459,7 +536,43 @@ namespace Biubiu
                 cards.Controls.Add(emptyLabel);
             if (ordered.Count > 0 && cards.Controls.Contains(emptyLabel))
                 cards.Controls.Remove(emptyLabel);
+            if (clocksChanged)
+            {
+                try
+                {
+                    RunClocks.Save(runsPath, runClocks);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(ex.Message);
+                }
+            }
+            NoticeChanges(ordered);
             UpdateScrollExtent();
+        }
+
+        void NoticeChanges(List<ProjectCard> ordered)
+        {
+            bool alert = false;
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                ProjectCard card = ordered[i];
+                string status = card.Status ?? "";
+                string previous;
+                bool known = seenStatus.TryGetValue(card.Hwnd, out previous);
+                seenStatus[card.Hwnd] = status;
+                if (!alertsArmed || !known || previous == status)
+                    continue;
+                if (status == "completed" || status == "error" || status == "confirm")
+                    alert = true;
+            }
+            alertsArmed = true;
+            if (!alert)
+                return;
+            if (IsHandleCreated)
+                Reminder.Flash(Handle);
+            if (soundEnabled)
+                Reminder.Play(soundVolume);
         }
 
         void SaveNote(string key, string text)
@@ -482,16 +595,16 @@ namespace Biubiu
 
         void AdvanceShimmer()
         {
-            phase += 0.02f;
-            if (phase > 1f)
-                phase = 0f;
+            phase = (unchecked((uint)Environment.TickCount) % 1900u) / 1900f;
             foreach (KeyValuePair<long, ProjectCardControl> pair in views)
             {
-                if (pair.Value.Card != null && pair.Value.Card.Status == "running")
-                {
-                    pair.Value.Phase = phase;
-                    pair.Value.Invalidate();
-                }
+                ProjectCardControl view = pair.Value;
+                if (view.Card == null || view.Card.Status != "running" || view.Width < 2 || view.Height < 2)
+                    continue;
+                view.Phase = phase;
+                Rectangle bar = CardPainter.ProgressBar(new Rectangle(0, 0, view.Width, view.Height));
+                bar.Inflate(3, 4);
+                view.Invalidate(bar);
             }
         }
 
@@ -619,7 +732,8 @@ namespace Biubiu
         {
             string project = card == null ? "" : card.Project;
             string noteText = card == null ? "" : card.Note;
-            Rectangle note = CardPainter.NoteBounds(new Rectangle(0, 0, Width, Height), project, noteText, true);
+            bool reserveElapsed = card != null && card.StartedAt != DateTimeOffset.MinValue;
+            Rectangle note = CardPainter.NoteBounds(new Rectangle(0, 0, Width, Height), project, noteText, true, reserveElapsed);
             int padX = CardPainter.Px(8);
             int padY = CardPainter.Px(3);
             noteBox.SetBounds(note.X + padX, note.Y + padY, Math.Max(CardPainter.Px(24), note.Width - padX * 2), Math.Max(CardPainter.Px(16), note.Height - CardPainter.Px(6)));

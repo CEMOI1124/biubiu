@@ -76,6 +76,7 @@ begin {
                 '","workspacePath":"' + (Escape-JsonText $item.WorkspacePath) +
                 '","summary":"' + (Escape-JsonText $item.Summary) +
                 '","status":"' + (Escape-JsonText $item.Status) +
+                '","startedAt":"' + (Escape-JsonText $item.StartedAt) +
                 '","updatedAt":"' + (Escape-JsonText $item.UpdatedAt) + '"}')
         }
         return '{"tasks":[' + ($parts -join ",") + ']}'
@@ -137,6 +138,7 @@ begin {
                                 WorkspacePath = [string]$item.workspacePath
                                 Summary = [string]$item.summary
                                 Status = [string]$item.status
+                                StartedAt = [string]$item.startedAt
                                 UpdatedAt = [string]$item.updatedAt
                             })
                         }
@@ -154,6 +156,7 @@ begin {
                     $item.UpdatedAt = $now
                     if ($EventName -eq "beforeSubmitPrompt") {
                         $item.Summary = $summary
+                        $item.StartedAt = $now
                     }
                 }
             }
@@ -163,6 +166,7 @@ begin {
                     WorkspacePath = $workspace
                     Summary = $summary
                     Status = $status
+                    StartedAt = $(if ($EventName -eq "beforeSubmitPrompt") { $now } else { "" })
                     UpdatedAt = $now
                 })
             }

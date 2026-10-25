@@ -43,19 +43,53 @@ namespace Biubiu
             return 1f;
         }
 
+        public static bool LoadSoundEnabled(string path)
+        {
+            string[] lines = ReadLines(path);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (line == "sound off")
+                    return false;
+                if (line == "sound on")
+                    return true;
+            }
+            return true;
+        }
+
+        public static int LoadVolume(string path)
+        {
+            string[] lines = ReadLines(path);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (!line.StartsWith("volume ", StringComparison.Ordinal))
+                    continue;
+                int value;
+                if (int.TryParse(line.Substring(7), NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                    return ClampVolume(value);
+            }
+            return 100;
+        }
+
         public static void SaveVertical(string path, bool vertical)
         {
-            Save(path, vertical, LoadPinned(path), LoadScale(path));
+            Save(path, vertical, LoadPinned(path), LoadScale(path), LoadSoundEnabled(path), LoadVolume(path));
         }
 
         public static void SavePinned(string path, bool pinned)
         {
-            Save(path, LoadVertical(path), pinned, LoadScale(path));
+            Save(path, LoadVertical(path), pinned, LoadScale(path), LoadSoundEnabled(path), LoadVolume(path));
         }
 
         public static void SaveScale(string path, float scale)
         {
-            Save(path, LoadVertical(path), LoadPinned(path), scale);
+            Save(path, LoadVertical(path), LoadPinned(path), scale, LoadSoundEnabled(path), LoadVolume(path));
+        }
+
+        public static void SaveSound(string path, bool enabled, int volume)
+        {
+            Save(path, LoadVertical(path), LoadPinned(path), LoadScale(path), enabled, volume);
         }
 
         public static float ClampScale(float value)
@@ -69,7 +103,16 @@ namespace Biubiu
             return value;
         }
 
-        static void Save(string path, bool vertical, bool pinned, float scale)
+        public static int ClampVolume(int value)
+        {
+            if (value < 0)
+                return 0;
+            if (value > 100)
+                return 100;
+            return value;
+        }
+
+        static void Save(string path, bool vertical, bool pinned, float scale, bool sound, int volume)
         {
             if (string.IsNullOrEmpty(path))
                 return;
@@ -77,6 +120,7 @@ namespace Biubiu
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
             scale = ClampScale(scale);
+            volume = ClampVolume(volume);
             StringBuilder text = new StringBuilder();
             text.Append(vertical ? "vertical" : "horizontal");
             text.Append('\n');
@@ -87,6 +131,11 @@ namespace Biubiu
             }
             text.Append("scale ");
             text.Append(scale.ToString("0.00", CultureInfo.InvariantCulture));
+            text.Append('\n');
+            text.Append(sound ? "sound on" : "sound off");
+            text.Append('\n');
+            text.Append("volume ");
+            text.Append(volume.ToString(CultureInfo.InvariantCulture));
             text.Append('\n');
             File.WriteAllText(path, text.ToString(), new UTF8Encoding(false));
         }

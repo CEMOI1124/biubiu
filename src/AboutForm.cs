@@ -51,7 +51,7 @@ namespace Biubiu
             AddBody(ref y, "专门面向 Cursor 编辑器用户开发的桌面托盘工具：\n\n自动识别打开的多个 Cursor 窗口，抓取正在执行的任务信息；\n\n卡片式列表展示每个任务的实时进度，任务结束后高亮绿色标记完成状态。\n\n常驻后台、低资源占用，不用来回切换窗口查看 AI 任务进度。");
             y += 8;
             AddHeading(ref y, "\U0001F4A1 说明");
-            AddBody(ref y, "仅本地监测，不会上传你的代码、对话内容到第三方服务器。");
+            AddBody(ref y, "第一次运行时会自动在 Cursor 安装 hook 插件用于检测。\n\n仅本地监测，不会上传你的代码、对话内容到第三方服务器。");
             y += 12;
             AddMeta(ref y, "作者", "CEMOI1124", false);
             AddMeta(ref y, "Github", GithubUrl, true);
