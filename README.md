@@ -18,8 +18,8 @@ Cursor 多窗口任务进度监测工具
 
 ## 下载附件：
 
-- [biubiu.exe](https://github.com/CEMOI1124/biubiu/releases/download/untagged-c2be2a8743c256852345/Biubiu.exe) 单文件版本
-- [biubiu.zip](https://github.com/CEMOI1124/biubiu/releases/download/untagged-c2be2a8743c256852345/Biubiu.zip) 绿色压缩包
+- [biubiu.exe](https://github.com/CEMOI1124/biubiu/releases/download/v1.0.1/Biubiu.exe) 单文件版本
+- [biubiu.zip](https://github.com/CEMOI1124/biubiu/releases/download/v1.0.1/Biubiu.zip) 绿色压缩包
 
 ## 作者
 
