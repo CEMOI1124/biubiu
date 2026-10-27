@@ -178,7 +178,8 @@ static class HookTests
             return;
         }
 
-        string tasks = Path.Combine(Path.GetTempPath(), "biubiu-script-" + Guid.NewGuid().ToString("N") + ".json");
+        string tasks = Path.Combine(Path.GetTempPath(), "biubiu-script-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tasks);
         try
         {
             string prompt = "\u5b8c\u5584\u767b\u5f55 \"hi\"";
@@ -199,7 +200,7 @@ static class HookTests
             string startedAt = record == null ? "" : record["startedAt"] as string;
             if (string.IsNullOrEmpty(startedAt))
                 Fail("start hook did not record the start time");
-            if (File.ReadAllText(tasks, Encoding.UTF8).IndexOf("hidden@example.com", StringComparison.Ordinal) >= 0)
+            if (File.ReadAllText(Path.Combine(tasks, "conv-1.json"), Encoding.UTF8).IndexOf("hidden@example.com", StringComparison.Ordinal) >= 0)
                 Fail("task file stored the user email");
 
             Dictionary<string, object> stop = new Dictionary<string, object>();
@@ -215,27 +216,29 @@ static class HookTests
             if (record == null || (string)record["startedAt"] != startedAt)
                 Fail("stop hook replaced the start time");
 
-            string beforeInvalid = File.ReadAllText(tasks, Encoding.UTF8);
+            string taskFile = Path.Combine(tasks, "conv-1.json");
+            string beforeInvalid = File.ReadAllText(taskFile, Encoding.UTF8);
             HookRun invalid = RunPiped(script, "beforeSubmitPrompt", "not-json", tasks);
             if (invalid.TimedOut || invalid.ExitCode != 0 || invalid.Stdout.Trim() != "{\"continue\":true}")
                 Fail("invalid hook input blocked the response");
-            if (File.ReadAllText(tasks, Encoding.UTF8) != beforeInvalid)
+            if (File.ReadAllText(taskFile, Encoding.UTF8) != beforeInvalid)
                 Fail("invalid hook input changed the task file");
 
-            string capped = Path.Combine(Path.GetTempPath(), "biubiu-cap-" + Guid.NewGuid().ToString("N") + ".json");
+            string capped = Path.Combine(Path.GetTempPath(), "biubiu-cap-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(capped);
             HookRun cap = RunCap(script, capped);
             if (cap.TimedOut || cap.ExitCode != 0)
                 Fail("cap run failed");
             TaskLoadResult loaded = TaskBoard.Load(capped, DateTimeOffset.Now);
             if (!loaded.Ok || loaded.Tasks.Count != 50)
                 Fail("task file kept " + (loaded.Ok ? loaded.Tasks.Count.ToString() : "invalid") + " records");
-            if (File.Exists(capped))
-                File.Delete(capped);
+            if (Directory.Exists(capped))
+                Directory.Delete(capped, true);
         }
         finally
         {
-            if (File.Exists(tasks))
-                File.Delete(tasks);
+            if (Directory.Exists(tasks))
+                Directory.Delete(tasks, true);
         }
     }
 
@@ -317,20 +320,13 @@ static class HookTests
         return run;
     }
 
-    static Dictionary<string, object> ReadTask(string path, string conversationId)
+    static Dictionary<string, object> ReadTask(string directory, string conversationId)
     {
+        string path = Path.Combine(directory, conversationId + ".json");
         if (!File.Exists(path))
             return null;
         JavaScriptSerializer serializer = new JavaScriptSerializer();
-        Dictionary<string, object> document = (Dictionary<string, object>)serializer.DeserializeObject(File.ReadAllText(path, Encoding.UTF8));
-        IList tasks = (IList)document["tasks"];
-        for (int i = 0; i < tasks.Count; i++)
-        {
-            Dictionary<string, object> item = (Dictionary<string, object>)tasks[i];
-            if ((string)item["conversationId"] == conversationId)
-                return item;
-        }
-        return null;
+        return (Dictionary<string, object>)serializer.DeserializeObject(File.ReadAllText(path, Encoding.UTF8));
     }
 
     static void Fail(string message)

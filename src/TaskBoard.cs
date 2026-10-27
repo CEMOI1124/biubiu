@@ -27,6 +27,7 @@ namespace Biubiu
     public static class TaskBoard
     {
         public static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(10);
+        static readonly Dictionary<string, List<TaskRecord>> remembered = new Dictionary<string, List<TaskRecord>>(StringComparer.OrdinalIgnoreCase);
 
         public static string DefaultPath()
         {
@@ -34,7 +35,7 @@ namespace Biubiu
             if (!string.IsNullOrEmpty(overridePath))
                 return overridePath;
             string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            return Path.Combine(root, "Biubiu", "tasks.json");
+            return Path.Combine(root, "Biubiu", "tasks");
         }
 
         public static string NormalizeWorkspacePath(string path)
@@ -55,13 +56,32 @@ namespace Biubiu
             TaskLoadResult result = new TaskLoadResult();
             result.Ok = true;
             result.Tasks = new List<TaskRecord>();
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            if (string.IsNullOrEmpty(path))
                 return result;
+            if (Directory.Exists(path))
+                return LoadDirectory(path, now);
+            if (!File.Exists(path))
+                return result;
+            string error = LoadDocument(path, now, result, null);
+            if (error != null)
+            {
+                result.Ok = false;
+                result.Error = error;
+                result.Tasks.Clear();
+            }
+            return result;
+        }
 
-            string text;
+        static TaskLoadResult LoadDirectory(string path, DateTimeOffset now)
+        {
+            TaskLoadResult result = new TaskLoadResult();
+            result.Ok = true;
+            result.Tasks = new List<TaskRecord>();
+            Dictionary<string, bool> seen = new Dictionary<string, bool>(StringComparer.Ordinal);
+            string[] files;
             try
             {
-                text = File.ReadAllText(path, Encoding.UTF8);
+                files = Directory.GetFiles(path, "*.json");
             }
             catch (IOException ex)
             {
@@ -76,8 +96,49 @@ namespace Biubiu
                 return result;
             }
 
+            for (int i = 0; i < files.Length; i++)
+            {
+                if (files[i].EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                string error = LoadDocument(files[i], now, result, seen);
+                if (error == null)
+                    continue;
+                List<TaskRecord> previous;
+                if (!remembered.TryGetValue(files[i], out previous))
+                    continue;
+                for (int n = 0; n < previous.Count; n++)
+                {
+                    result.Tasks.Add(previous[n]);
+                    if (!string.IsNullOrEmpty(previous[n].ConversationId))
+                        seen[previous[n].ConversationId] = true;
+                }
+            }
+
+            DirectoryInfo parent = Directory.GetParent(path);
+            if (parent != null)
+                LoadDocument(Path.Combine(parent.FullName, "tasks.json"), now, result, seen);
+            return result;
+        }
+
+        static string LoadDocument(string path, DateTimeOffset now, TaskLoadResult result, Dictionary<string, bool> seen)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                return null;
+            string text;
+            try
+            {
+                text = ReadShared(path);
+            }
+            catch (IOException ex)
+            {
+                return ex.Message;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return ex.Message;
+            }
             if (string.IsNullOrWhiteSpace(text))
-                return result;
+                return null;
 
             object root;
             try
@@ -88,52 +149,67 @@ namespace Biubiu
             }
             catch (Exception)
             {
-                result.Ok = false;
-                result.Error = "tasks file is invalid";
-                return result;
+                return "tasks file is invalid";
             }
 
             Dictionary<string, object> document = root as Dictionary<string, object>;
             if (document == null)
-            {
-                result.Ok = false;
-                result.Error = "tasks file is invalid";
-                return result;
-            }
+                return "tasks file is invalid";
 
             object tasksValue;
-            if (!document.TryGetValue("tasks", out tasksValue) || tasksValue == null)
-                return result;
-            IList tasks = tasksValue as IList;
-            if (tasks == null)
+            if (document.TryGetValue("tasks", out tasksValue) && tasksValue != null)
             {
-                result.Ok = false;
-                result.Error = "tasks file is invalid";
-                return result;
+                IList tasks = tasksValue as IList;
+                if (tasks == null)
+                    return "tasks file is invalid";
+                List<TaskRecord> stored = new List<TaskRecord>();
+                for (int i = 0; i < tasks.Count; i++)
+                    AddRecord(tasks[i] as Dictionary<string, object>, now, result, seen, stored);
+                remembered[path] = stored;
+                return null;
             }
 
-            for (int i = 0; i < tasks.Count; i++)
+            if (document.ContainsKey("conversationId"))
             {
-                Dictionary<string, object> item = tasks[i] as Dictionary<string, object>;
-                if (item == null)
-                    continue;
-                TaskRecord record = new TaskRecord();
-                record.ConversationId = ReadString(item, "conversationId");
-                record.WorkspacePath = NormalizeWorkspacePath(ReadString(item, "workspacePath"));
-                record.Summary = ReadString(item, "summary");
-                record.Status = ReadString(item, "status");
-                record.StartedAt = ReadTime(item, "startedAt");
-                DateTimeOffset updated;
-                if (!DateTimeOffset.TryParse(ReadString(item, "updatedAt"), out updated))
-                    updated = DateTimeOffset.MinValue;
-                record.UpdatedAt = updated;
-                if (record.Status == "running" && (updated == DateTimeOffset.MinValue || now - updated > StaleAfter))
-                    record.Status = "unknown";
-                else if (record.Status == "running" && record.StartedAt == DateTimeOffset.MinValue)
-                    record.StartedAt = updated;
-                result.Tasks.Add(record);
+                List<TaskRecord> stored = new List<TaskRecord>();
+                AddRecord(document, now, result, seen, stored);
+                remembered[path] = stored;
+                return null;
             }
-            return result;
+            return null;
+        }
+
+        static void AddRecord(Dictionary<string, object> item, DateTimeOffset now, TaskLoadResult result, Dictionary<string, bool> seen, List<TaskRecord> stored)
+        {
+            if (item == null)
+                return;
+            TaskRecord record = new TaskRecord();
+            record.ConversationId = ReadString(item, "conversationId");
+            if (seen != null && !string.IsNullOrEmpty(record.ConversationId) && seen.ContainsKey(record.ConversationId))
+                return;
+            record.WorkspacePath = NormalizeWorkspacePath(ReadString(item, "workspacePath"));
+            record.Summary = ReadString(item, "summary");
+            record.Status = ReadString(item, "status");
+            record.StartedAt = ReadTime(item, "startedAt");
+            DateTimeOffset updated;
+            if (!DateTimeOffset.TryParse(ReadString(item, "updatedAt"), out updated))
+                updated = DateTimeOffset.MinValue;
+            record.UpdatedAt = updated;
+            if (record.Status == "running" && (updated == DateTimeOffset.MinValue || now - updated > StaleAfter))
+                record.Status = "unknown";
+            else if (record.Status == "running" && record.StartedAt == DateTimeOffset.MinValue)
+                record.StartedAt = updated;
+            result.Tasks.Add(record);
+            stored.Add(record);
+            if (seen != null && !string.IsNullOrEmpty(record.ConversationId))
+                seen[record.ConversationId] = true;
+        }
+
+        static string ReadShared(string path)
+        {
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                return reader.ReadToEnd();
         }
 
         static DateTimeOffset ReadTime(Dictionary<string, object> item, string key)

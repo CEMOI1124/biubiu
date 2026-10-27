@@ -37,17 +37,79 @@ begin {
         return $path
     }
 
-    function Get-TasksPath {
+    function Get-TasksDirectory {
         if (-not [string]::IsNullOrWhiteSpace($env:BIUBIU_TASKS_PATH)) {
-            $parent = Split-Path -Parent $env:BIUBIU_TASKS_PATH
-            if (-not [string]::IsNullOrWhiteSpace($parent)) {
-                [System.IO.Directory]::CreateDirectory($parent) | Out-Null
-            }
-            return $env:BIUBIU_TASKS_PATH
+            $dir = $env:BIUBIU_TASKS_PATH
+        } else {
+            $dir = Join-Path $env:LOCALAPPDATA "Biubiu\tasks"
         }
-        $dir = Join-Path $env:LOCALAPPDATA "Biubiu"
         [System.IO.Directory]::CreateDirectory($dir) | Out-Null
-        return (Join-Path $dir "tasks.json")
+        return $dir
+    }
+
+    function Get-TaskFileName([string]$conversationId) {
+        $safe = [regex]::Replace($conversationId, "[^A-Za-z0-9._-]", "_")
+        if ([string]::IsNullOrWhiteSpace($safe)) {
+            $safe = "task"
+        }
+        if ($safe.Length -gt 80) {
+            $safe = $safe.Substring(0, 80)
+        }
+        return $safe + ".json"
+    }
+
+    function Read-TaskText([string]$path) {
+        if (-not [System.IO.File]::Exists($path)) {
+            return ""
+        }
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+        try {
+            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+            return $reader.ReadToEnd()
+        } finally {
+            $stream.Dispose()
+        }
+    }
+
+    function Write-TaskFile([string]$path, [string]$json) {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        $temp = $path + ".tmp"
+        [System.IO.File]::WriteAllText($temp, $json, $utf8)
+        if ([System.IO.File]::Exists($path)) {
+            $backup = $path + ".bak"
+            [System.IO.File]::Replace($temp, $path, $backup)
+            if ([System.IO.File]::Exists($backup)) {
+                [System.IO.File]::Delete($backup)
+            }
+        } else {
+            [System.IO.File]::Move($temp, $path)
+        }
+    }
+
+    function Trim-TaskFiles([string]$dir) {
+        $files = @(Get-ChildItem -LiteralPath $dir -Filter *.json -File -ErrorAction SilentlyContinue)
+        if ($files.Count -le 50) {
+            return
+        }
+        $ranked = New-Object System.Collections.Generic.List[object]
+        foreach ($file in $files) {
+            $stamp = ""
+            try {
+                $parsed = (Read-TaskText $file.FullName) | ConvertFrom-Json
+                if ($parsed -ne $null) {
+                    $stamp = [string]$parsed.updatedAt
+                }
+            } catch {
+                $stamp = ""
+            }
+            $ranked.Add(@{ Path = $file.FullName; Stamp = $stamp })
+        }
+        $ordered = @($ranked | Sort-Object { $_.Stamp })
+        $extra = $ordered.Count - 50
+        for ($i = 0; $i -lt $extra; $i++) {
+            Remove-Item -LiteralPath $ordered[$i].Path -Force -ErrorAction SilentlyContinue
+        }
     }
 
     function Get-Summary([string]$prompt) {
@@ -113,8 +175,9 @@ begin {
             $summary = Get-Summary ([string]$payload.prompt)
         }
 
-        $path = Get-TasksPath
-        $mutex = New-Object System.Threading.Mutex($false, "Local\BiubiuCursorTasks")
+        $path = Join-Path (Get-TasksDirectory) (Get-TaskFileName $conversationId)
+        $mutexName = "Local\BiubiuTask-" + (Get-TaskFileName $conversationId)
+        $mutex = New-Object System.Threading.Mutex($false, $mutexName)
         $locked = $false
         try {
             try {
@@ -126,70 +189,36 @@ begin {
                 return
             }
 
-            $tasks = New-Object System.Collections.Generic.List[object]
-            if (Test-Path -LiteralPath $path) {
-                $existingText = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
-                if (-not [string]::IsNullOrWhiteSpace($existingText)) {
-                    $parsed = $existingText | ConvertFrom-Json
-                    if ($parsed -ne $null -and $parsed.tasks -ne $null) {
-                        foreach ($item in @($parsed.tasks)) {
-                            $tasks.Add(@{
-                                ConversationId = [string]$item.conversationId
-                                WorkspacePath = [string]$item.workspacePath
-                                Summary = [string]$item.summary
-                                Status = [string]$item.status
-                                StartedAt = [string]$item.startedAt
-                                UpdatedAt = [string]$item.updatedAt
-                            })
-                        }
-                    }
+            $existingSummary = ""
+            $existingStarted = ""
+            $existingText = Read-TaskText $path
+            if (-not [string]::IsNullOrWhiteSpace($existingText)) {
+                $parsed = $existingText | ConvertFrom-Json
+                if ($parsed -ne $null) {
+                    $existingSummary = [string]$parsed.summary
+                    $existingStarted = [string]$parsed.startedAt
                 }
             }
 
             $now = [DateTimeOffset]::Now.ToString("o")
-            $found = $false
-            foreach ($item in $tasks) {
-                if ($item.ConversationId -eq $conversationId) {
-                    $found = $true
-                    $item.WorkspacePath = $workspace
-                    $item.Status = $status
-                    $item.UpdatedAt = $now
-                    if ($EventName -eq "beforeSubmitPrompt") {
-                        $item.Summary = $summary
-                        $item.StartedAt = $now
-                    }
-                }
+            $startedAt = $existingStarted
+            if ($EventName -eq "beforeSubmitPrompt") {
+                $startedAt = $now
+            } elseif ([string]::IsNullOrWhiteSpace($startedAt)) {
+                $startedAt = ""
             }
-            if (-not $found) {
-                $tasks.Add(@{
-                    ConversationId = $conversationId
-                    WorkspacePath = $workspace
-                    Summary = $summary
-                    Status = $status
-                    StartedAt = $(if ($EventName -eq "beforeSubmitPrompt") { $now } else { "" })
-                    UpdatedAt = $now
-                })
+            if ($EventName -ne "beforeSubmitPrompt") {
+                $summary = $existingSummary
             }
 
-            while ($tasks.Count -gt 50) {
-                $oldest = 0
-                $oldestStamp = [string]$tasks[0].UpdatedAt
-                for ($i = 1; $i -lt $tasks.Count; $i++) {
-                    $stamp = [string]$tasks[$i].UpdatedAt
-                    if ($stamp -lt $oldestStamp) {
-                        $oldest = $i
-                        $oldestStamp = $stamp
-                    }
-                }
-                $tasks.RemoveAt($oldest)
-            }
-
-            $json = ConvertTo-TaskJson $tasks
-            $utf8 = New-Object System.Text.UTF8Encoding $false
-            $temp = $path + ".tmp"
-            [System.IO.File]::WriteAllText($temp, $json, $utf8)
-            [System.IO.File]::Copy($temp, $path, $true)
-            [System.IO.File]::Delete($temp)
+            $json = '{"conversationId":"' + (Escape-JsonText $conversationId) +
+                '","workspacePath":"' + (Escape-JsonText $workspace) +
+                '","summary":"' + (Escape-JsonText $summary) +
+                '","status":"' + (Escape-JsonText $status) +
+                '","startedAt":"' + (Escape-JsonText $startedAt) +
+                '","updatedAt":"' + (Escape-JsonText $now) + '"}'
+            Write-TaskFile $path $json
+            Trim-TaskFiles (Get-TasksDirectory)
         } finally {
             if ($locked) {
                 $mutex.ReleaseMutex()

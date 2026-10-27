@@ -333,6 +333,15 @@ namespace Biubiu
             pinButton.Invalidate();
         }
 
+        static bool IsTaskFileLock(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return false;
+            return text.IndexOf("tasks.json", StringComparison.OrdinalIgnoreCase) >= 0
+                || text.IndexOf("正由另一进程使用", StringComparison.Ordinal) >= 0
+                || text.IndexOf("being used by another process", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         void SetStatus(string text)
         {
             statusLabel.Text = text ?? "";
@@ -454,6 +463,8 @@ namespace Biubiu
                         {
                             if (!string.IsNullOrEmpty(error))
                                 SetStatus(error);
+                            else if (IsTaskFileLock(statusLabel.Text))
+                                SetStatus("");
                             if (windows != null && tasks != null)
                                 ShowCards(windows, tasks);
                         }
